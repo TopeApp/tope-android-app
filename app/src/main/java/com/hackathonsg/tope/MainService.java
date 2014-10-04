@@ -4,6 +4,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.database.Cursor;
 import android.location.Criteria;
 import android.location.Location;
 import android.location.LocationListener;
@@ -13,6 +14,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.provider.ContactsContract;
 import android.util.Log;
 
 import com.getpebble.android.kit.PebbleKit;
@@ -20,14 +22,20 @@ import com.getpebble.android.kit.util.PebbleDictionary;
 
 import org.apache.http.HttpHost;
 import org.apache.http.HttpResponse;
+import org.apache.http.NameValuePair;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
 import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPut;
+import org.apache.http.message.BasicNameValuePair;
 import org.apache.http.util.EntityUtils;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.UUID;
 import java.util.Queue;
 
@@ -45,12 +53,33 @@ public class MainService extends Service {
     // Android -> Pebble
     static final byte MESSAGE_TYPE_REPONSETOPE = 0;
 
-    final Queue<Integer> queue = new LinkedList<Integer>();
+    final Queue<String> queue = new LinkedList<String>();
     public MainService() {
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        final GetOwnerInfo info = new GetOwnerInfo(this);
+        Log.d("Tope", info.name);
+        final SharedPreferences settings = getSharedPreferences("TopePrefs", MODE_PRIVATE);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                AndroidHttpClient client = AndroidHttpClient.newInstance("TopeApp");
+                try {
+                    List<NameValuePair> nameValuePairs = new ArrayList<NameValuePair>(2);
+                    nameValuePairs.add(new BasicNameValuePair("name", info.name));
+                    nameValuePairs.add(new BasicNameValuePair("email", info.email));
+                    HttpPut req = new HttpPut("/api/user/" + settings.getInt("id", -1));
+                    req.setEntity(new UrlEncodedFormEntity(nameValuePairs));
+                    HttpResponse resp = client.execute(new HttpHost("lechateau.lambertz.fr", 3000), req);
+                } catch (IOException e) {
+                    Log.d("Tope", "HTTP Error", e);
+                }
+                client.close();
+            }
+        }).start();
+
         if(!serviceCreated) {
 
             serviceCreated = true;
@@ -67,15 +96,17 @@ public class MainService extends Service {
                 @Override
                 public void receiveData(final Context context, final int transactionId, final PebbleDictionary data) {
                     switch(data.getUnsignedInteger(0).byteValue()){
-                        case MESSAGE_TYPE_APP_START :
-                            Log.d("", "Tope app started");
-                            sendNotificationsToPebble(queue.peek().toString());
+                        case MESSAGE_TYPE_APP_START:
+                            Log.d("Tope", "Tope app started");
+                            if (queue.peek() != null)
+                                sendNotificationsToPebble(queue.peek().toString());
                         break;
                         case MESSAGE_TYPE_TOPE_EVENT:
-                            Log.d("", "Tope at " + System.currentTimeMillis());
+                            Log.d("Tope", "Tope at " + System.currentTimeMillis());
                             findTopeNearMe();
                         break;
                         case MESSAGE_TYPE_VALIDATION:
+                            Log.d("Tope", "Tope validated event");
                             queue.poll();
                             if (queue.peek() != null) {
                                 sendNotificationsToPebble(queue.peek().toString());
@@ -111,7 +142,7 @@ public class MainService extends Service {
                 try {
                     SharedPreferences settings = getSharedPreferences("TopePrefs", 0);
                     HttpResponse resp = client.execute(new HttpHost("lechateau.lambertz.fr", 3000),
-                            new HttpGet("/api/user/" + settings.getInt("userid", 0) + "/timestamp/" + timestamp));
+                            new HttpGet("/api/user/" + settings.getInt("id", 0) + "/timestamp/" + timestamp));
                     Log.d("Tope", EntityUtils.toString(resp.getEntity(), "UTF_8"));
                 } catch (IOException e) {
                     Log.d("Tope", "Got an error bro", e);
@@ -137,43 +168,55 @@ public class MainService extends Service {
             @Override
             public void run() {
                 AndroidHttpClient client = AndroidHttpClient.newInstance("TopeApp");
-                SharedPreferences settings = getSharedPreferences("TopePrefs", 0);
+                SharedPreferences settings = getSharedPreferences("TopePrefs", MODE_PRIVATE);
                 long timestamp = System.currentTimeMillis();
                 HttpResponse resp = null;
                 JSONObject body = null;
                 int caseInt = 0;
                 int count = 0;
                 do {
-                    if (caseInt == 1)
+                    if (caseInt == 1) {
                         try {
                             Thread.sleep(500);
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                         }
-                    else
+                    } else {
+                        Log.d("Tope", ((Integer)settings.getInt("id", -1)).toString());
                         caseInt++;
+                    }
                     try {
                         resp = client.execute(new HttpHost("lechateau.lambertz.fr", 3000),
-                                new HttpGet("/api/tap/" + settings.getInt("userid", 0) + "/timestamp/" + timestamp));
+                                new HttpGet("/api/tap/" + settings.getInt("id", -1) + "/timestamp/" + timestamp));
                         body = new JSONObject(EntityUtils.toString(resp.getEntity(), "UTF_8"));
+                        Log.d("Tope", body.toString());
                         caseInt = body.getInt("case");
                     } catch (IOException e) {
+                        Log.e("Tope", "HTTP Error", e);
                     } catch (JSONException e) {
+                        Log.e("Tope", "JSON Error", e);
                     }
                     count++;
                 } while (count < 5 && (body == null || caseInt == 1));
+                client.close();
                 if (body == null || caseInt == 1) {
                     return;
                 }
-                Log.d("Tope", body.toString());
                 int id;
+                String name = null;
                 try {
                     id = body.getInt("id");
+                    if (body.has("name")) {
+                        name = body.getString("name");
+                    }
                 } catch (JSONException e) {
                     return;
                 }
-                queue.add(id);
-                PebbleKit.startAppOnPebble(getApplicationContext(), PEBBLE_APP_UUID);
+                if (name != null)
+                    queue.add(name);
+                else
+                    queue.add(((Integer)id).toString());
+                sendNotificationsToPebble(queue.peek().toString());
 
                 // PebbleDictionary data = new PebbleDictionary();
                 // data.addString(0, "l'app Tope! est top");
@@ -183,10 +226,10 @@ public class MainService extends Service {
         }).start();
     }
 
-    private void sendNotificationsToPebble(String id) {
+    private void sendNotificationsToPebble(String name) {
         PebbleDictionary senddata = new PebbleDictionary();
         senddata.addUint8(0, MESSAGE_TYPE_REPONSETOPE);
-        senddata.addString(1, id);
+        senddata.addString(1, name);
         PebbleKit.sendDataToPebble(getApplicationContext(), PEBBLE_APP_UUID, senddata);
     }
 
