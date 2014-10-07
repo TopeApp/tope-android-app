@@ -1,11 +1,13 @@
 package com.hackathonsg.tope;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.http.AndroidHttpClient;
 import android.os.Bundle;
 import android.util.JsonReader;
+import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 
@@ -33,8 +35,9 @@ public class MainActivity extends Activity {
 
         // Start service
         final Intent i = new Intent(getApplicationContext(), MainService.class);
-        final SharedPreferences settings = getSharedPreferences("TopePrefs", 0);
+        final SharedPreferences settings = getSharedPreferences("TopePrefs", MODE_PRIVATE);
         if (settings.contains("id")) {
+            Log.d("Tope", "UserID : " + ((Integer)settings.getInt("id", -1)).toString());
             getApplicationContext().startService(i);
         } else {
             new Thread(new Runnable() {
@@ -45,8 +48,10 @@ public class MainActivity extends Activity {
                         HttpResponse resp = client.execute(new HttpHost("lechateau.lambertz.fr", 3000),
                                 new HttpPost("/api/user"));
                         JSONObject obj = new JSONObject(EntityUtils.toString(resp.getEntity()));
+                        client.close();
                         int userid = obj.getInt("id");
                         settings.edit().putInt("id", userid).commit();
+                        Log.d("Tope", "UserID : " + userid);
                         getApplicationContext().startService(i);
                     } catch (IOException e) {
                         e.printStackTrace();
